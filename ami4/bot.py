@@ -71,15 +71,15 @@ async def login(event):
                 if user_id not in user_sessions:
                     user_sessions[user_id] = []
                 user_sessions[user_id].append({"client": user_client, "phone": phone})
-                await event.reply(f"✅ Anda sudah login sebelumnya! Langsung terhubung sebagai {phone}., Format command bot cavy help")
+                await event.reply(f"✅ Anda sudah login sebelumnya! Langsung terhubung sebagai {phone}.")
                 await configure_event_handlers(user_client, user_id)
                 return
             else:
                 await user_client.disconnect()
                 os.remove(session_file)  # Hapus sesi yang corrupt
-                await event.reply("⚠️ Sesi lama tidak valid, melakukan login ulang...")
+                await event.reply("⚠️ Sesi lama tidak valid, melakukan login ulang...tunggu beberapa detik")
         except errors.SessionPasswordNeededError:
-            await event.reply("⚠️ Sesi ini membutuhkan password. Silakan login ulang dengan OTP.")
+            await event.reply("⚠️ Sesi ini membutuhkan password. Silakan login ulang dengan OTP atau masukkan password.")
         except Exception as e:
             await event.reply(f"⚠️ Gagal menggunakan sesi lama: {e}. Login ulang diperlukan.")
             try:
@@ -115,7 +115,6 @@ async def verify(event):
         await event.reply("⚠️ Anda belum login. Gunakan perintah `/login` terlebih dahulu.")
         return
 
-    # Cek jika ada client aktif untuk user ini
     user_client = user_sessions[user_id][-1]["client"]
     phone = user_sessions[user_id][-1]["phone"]
 
@@ -123,8 +122,13 @@ async def verify(event):
         await user_client.sign_in(phone, code)
         await event.reply(f"✅ Verifikasi berhasil untuk nomor {phone}! Anda sekarang dapat menggunakan fitur.")
         await configure_event_handlers(user_client, user_id)
+    except errors.SessionPasswordNeededError:
+        await event.reply("⚠️ Kode OTP benar, tapi akun ini mengaktifkan verifikasi dua langkah (password).\n"
+                          "Silakan masukkan password Anda dengan perintah:\n"
+                          "`/password <password>`")
     except Exception as e:
         await event.reply(f"⚠️ Gagal memverifikasi kode untuk nomor {phone}: {e}")
+
 
 @bot_client.on(events.NewMessage(pattern='/logout (.+)'))
 async def logout(event):
@@ -139,9 +143,17 @@ async def logout(event):
     if os.path.exists(session_file):
         os.remove(session_file)
         total_sessions -= 1  # Kurangi jumlah total sesi
+
+        # Hapus juga dari user_sessions
+        if user_id in user_sessions:
+            user_sessions[user_id] = [s for s in user_sessions[user_id] if s["phone"] != phone]
+            if not user_sessions[user_id]:
+                del user_sessions[user_id]
+
         await event.reply(f"✅ Berhasil logout untuk nomor {phone}.")
     else:
         await event.reply(f"⚠️ Tidak ada sesi aktif untuk nomor {phone}.")
+
 
 @bot_client.on(events.NewMessage(pattern='/list'))
 async def list_accounts(event):
@@ -173,18 +185,33 @@ async def reset_all_sessions(event):
 
     print("Perintah /resetall diterima!")  # Log untuk memastikan perintah diterima
     
-    # Menghapus semua sesi
-    for user_id in user_sessions.keys():
-        for user_data in user_sessions[user_id]:
-            user_client = user_data["client"]
-            await user_client.disconnect()  # Disconnect semua client
-            session_file = user_data["client"].session.filename
-            print(f"Deleting session file: {session_file}")  # Log untuk melihat file sesi yang dihapus
-            os.remove(session_file)  # Hapus file sesi
-    user_sessions.clear()  # Hapus data sesi
-    total_sessions = 0  # Reset total sesi ke 0
-    await event.reply("✅ Semua sesi telah direset.")
-    print("Semua sesi telah direset.")  # Log untuk memastikan proses selesai
+    try:
+        for user_id in list(user_sessions.keys()):
+            for user_data in user_sessions[user_id]:
+                user_client = user_data["client"]
+                session_file = user_client.session.filename
+
+                try:
+                    await user_client.disconnect()
+                except Exception as e:
+                    print(f"Gagal disconnect client: {e}")
+
+                if os.path.exists(session_file):
+                    print(f"Deleting session file: {session_file}")
+                    try:
+                        os.remove(session_file)
+                    except Exception as e:
+                        print(f"❌ Gagal menghapus file sesi: {e}")
+
+        user_sessions.clear()
+        total_sessions = 0
+
+        await event.reply("✅ Semua sesi telah direset.")
+        print("Semua sesi telah direset.")
+    except Exception as e:
+        await event.reply(f"⚠️ Gagal mereset sesi: {e}")
+        print(f"Gagal mereset sesi: {e}")
+
 
 
 @bot_client.on(events.NewMessage(pattern='/help'))
@@ -199,6 +226,25 @@ async def help_command(event):
         "`/resetall` - Menghapus semua sesi.\n"
         "`/help` - Tampilkan daftar perintah."
     )
+
+@bot_client.on(events.NewMessage(pattern='/password (.+)'))
+async def password(event):
+    sender = await event.get_sender()
+    user_id = sender.id
+    password = event.pattern_match.group(1)
+
+    if user_id not in user_sessions or not user_sessions[user_id]:
+        await event.reply("⚠️ Anda belum login atau verifikasi OTP dulu. Gunakan perintah `/login` dan `/verify` terlebih dahulu.")
+        return
+
+    user_client = user_sessions[user_id][-1]["client"]
+    try:
+        await user_client.sign_in(password=password)
+        await event.reply("✅ Password berhasil diverifikasi! Login berhasil dan akun Anda sekarang aktif.")
+        await configure_event_handlers(user_client, user_id)
+    except Exception as e:
+        await event.reply(f"⚠️ Gagal verifikasi password: {e}")
+
 
 async def run_bot():
     while True:
